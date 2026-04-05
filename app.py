@@ -2,7 +2,7 @@ import streamlit as st
 import pandas as pd
 import io
 from datetime import date
-import os
+import openpyxl
 
 # Oldal beállításai
 st.set_page_config(page_title="Napi Riport", page_icon="📝", layout="centered")
@@ -20,13 +20,12 @@ with col1:
     uzlet = st.text_input("Üzlet", value="MM Westend")
     datum = st.date_input("Dátum", value=date.today())
     
-    # Automatikus Hét és Nap számolás a dátumból
+    # Automatikus Hét és Nap számolás
     het = datum.isocalendar()[1]
     magyar_napok = ["hétfő", "kedd", "szerda", "csütörtök", "péntek", "szombat", "vasárnap"]
     nap = magyar_napok[datum.weekday()]
     
 with col2:
-    # Kék infó doboz, ami mutatja a kiszámolt napot és hetet
     st.info(f"📅 Automatikus dátum:\n**{het}. hét, {nap}**")
     oraszam = st.number_input("Ledolgozott óraszám", min_value=1, value=8)
     megszolitott = st.number_input("Megszólított vásárlók száma", min_value=0, value=0)
@@ -34,23 +33,15 @@ with col2:
 # --- 2. TERMÉKEK RÖGZÍTÉSE ---
 st.header("2. Eladott termékek rögzítése")
 
-# Okosabb fájlkeresés (ékezettel és anélkül is megpróbálja)
-lehetseges_nevek = ["fokusz.csv", "Fokusz.csv", "Fókusz.csv", "FÓKUSZ.csv"]
+# Terméklista kiolvasása KÖZVETLENÜL az eredeti Excel sablon Fókusz füléről
 termek_lista = []
-
-for nev_verzio in lehetseges_nevek:
-    if os.path.exists(nev_verzio):
-        try:
-            fokusz_df = pd.read_csv(nev_verzio, header=None)
-            termek_lista = fokusz_df[0].dropna().tolist()
-            if "Típus" in termek_lista: 
-                termek_lista.remove("Típus")
-            break  # Ha megtalálta és beolvasta, kilép a keresésből
-        except Exception:
-            pass
-
-if not termek_lista:
-    termek_lista = ["Kérlek töltsd fel a fokusz.csv fájlt a GitHubra!"]
+try:
+    df_fokusz = pd.read_excel('sablon.xlsx', sheet_name='Fókusz', header=None)
+    termek_lista = df_fokusz[0].dropna().tolist()
+    if "Típus" in termek_lista: 
+        termek_lista.remove("Típus")
+except Exception:
+    termek_lista = ["Kérlek töltsd fel a sablon.xlsx fájlt a GitHubra!"]
 
 # "No sales" hozzáadása a lista legelejére
 if "No sales" not in termek_lista:
@@ -82,7 +73,7 @@ konkurencia = st.text_area("Konkurencia (új brand, promóter, akciók, legkeres
 kihelyezes = st.text_area("Kihelyezés (hiányzó DEMO, planogram, működnek-e)", value="Minden rendben")
 komment = st.text_area("Komment (tapasztalatok, észrevételek)", placeholder="Ide írhatsz bármit az áruházzal, vásárlókkal kapcsolatban...")
 
-# --- 4. EXPORTÁLÁS ---
+# --- 4. EXPORTÁLÁS (SABLON ALAPJÁN) ---
 st.header("4. Exportálás")
 
 if not st.session_state.termekek:
@@ -106,50 +97,48 @@ else:
             
         st.success("✅ Minden adat rendben, a formázott riport készen áll a letöltésre!")
         
-        sorok = []
-        for i, termek in enumerate(st.session_state.termekek):
-            sorok.append({
-                "Név": nev,
-                "Üzlet": uzlet,
-                "Dátum": datum.strftime("%Y-%m-%d"),
-                "Hét": het,
-                "Nap": nap,
-                "Ledolgozott óraszám": oraszam,
-                "Megszólított vásárlók száma": megszolitott,
-                "Eladott darabszám": termek["Darab"],
-                "Eladott termék polcár": termek["Ár"],
-                "Eladott típus": termek["Típus"],
-                "Milyen termék hiányzik/mit rendeltetnél?": hiany if i == 0 else "",
-                "Konkurencia": konkurencia if i == 0 else "",
-                "Kihelyezés": kihelyezes if i == 0 else "",
-                "Komment": komment if i == 0 else ""
-            })
-        
-        df = pd.DataFrame(sorok)
-        buffer = io.BytesIO()
-        
-        with pd.ExcelWriter(buffer, engine='xlsxwriter') as writer:
-            df.to_excel(writer, index=False, sheet_name='Napi_Riport')
-            workbook = writer.book
-            worksheet = writer.sheets['Napi_Riport']
+        try:
+            # Megnyitjuk az eredeti Excel sablont
+            wb = openpyxl.load_workbook('sablon.xlsx')
             
-            header_format = workbook.add_format({
-                'bold': True,
-                'bg_color': '#F0F0F0',
-                'border': 1
-            })
+            # Ellenőrizzük, hogy a Riport fül megvan-e, ha igen azt választjuk ki
+            if 'Riport' in wb.sheetnames:
+                ws = wb['Riport']
+            else:
+                ws = wb.active  # Ha nincs Riport nevű fül, az elsőt használja
             
-            for col_num, value in enumerate(df.columns.values):
-                worksheet.write(0, col_num, value, header_format)
-                column_len = max(df[value].astype(str).map(len).max(), len(value)) + 2
-                worksheet.set_column(col_num, col_num, min(column_len, 40))
-                
-        formazott_nev = nev.replace(" ", "_")
-        fajlnev = f"{formazott_nev}_W{het}_{nap}.xlsx"
-        
-        st.download_button(
-            label="📥 Formázott Excel letöltése",
-            data=buffer.getvalue(),
-            file_name=fajlnev,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-        )
+            # Adatok beírása a 2. sortól kezdve (az 1. sor a fejléc)
+            kezdo_sor = 2
+            for i, termek in enumerate(st.session_state.termekek):
+                sor = kezdo_sor + i
+                ws.cell(row=sor, column=1, value=nev)
+                ws.cell(row=sor, column=2, value=uzlet)
+                ws.cell(row=sor, column=3, value=datum.strftime("%Y-%m-%d"))
+                ws.cell(row=sor, column=4, value=het)
+                ws.cell(row=sor, column=5, value=nap)
+                ws.cell(row=sor, column=6, value=oraszam)
+                ws.cell(row=sor, column=7, value=megszolitott)
+                ws.cell(row=sor, column=8, value=termek["Darab"])
+                ws.cell(row=sor, column=9, value=termek["Ár"])
+                ws.cell(row=sor, column=10, value=termek["Típus"])
+                ws.cell(row=sor, column=11, value=hiany if i == 0 else "")
+                ws.cell(row=sor, column=12, value=konkurencia if i == 0 else "")
+                ws.cell(row=sor, column=13, value=kihelyezes if i == 0 else "")
+                ws.cell(row=sor, column=14, value=komment if i == 0 else "")
+            
+            # Excel mentése a memóriába (hogy ne módosítsa végleg a felhőben lévő sablont)
+            buffer = io.BytesIO()
+            wb.save(buffer)
+            
+            formazott_nev = nev.replace(" ", "_")
+            fajlnev = f"{formazott_nev}_W{het}_{nap}.xlsx"
+            
+            st.download_button(
+                label="📥 Formázott Excel letöltése",
+                data=buffer.getvalue(),
+                file_name=fajlnev,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
+            
+        except Exception as e:
+            st.error(f"Hiba történt a sablon megnyitásakor. Biztosan feltöltötted a 'sablon.xlsx' fájlt? Részletek: {e}")
